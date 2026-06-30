@@ -313,14 +313,14 @@ async def extract_google_jobs(page: Page) -> list[dict]:
 # Direct apply via Playwright form fill
 # ---------------------------------------------------------------------------
 
-async def attempt_direct_apply(page: Page, job: dict, resume_path: str, submit: bool = False) -> bool:
+async def attempt_direct_apply(page: Page, job: dict, resume_path: str, submit: bool = False) -> str:
     """
     For jobs with a non-ATS direct apply URL, open the apply page and fill what
     can be matched safely. Only submits the form when submit=True.
     """
     direct_urls = [u for u in job.get("apply_urls", []) if not _is_ats_url(u)]
     if not direct_urls:
-        return False
+        return "no_direct_url"
 
     apply_url = direct_urls[0]
     print(f"[direct_apply] Navigating to: {apply_url[:80]}")
@@ -328,6 +328,11 @@ async def attempt_direct_apply(page: Page, job: dict, resume_path: str, submit: 
     try:
         await page.goto(apply_url, wait_until="domcontentloaded", timeout=20_000)
         await page.wait_for_timeout(2000)
+
+        page_text = (await page.locator("body").inner_text(timeout=5000)).lower()
+        if re.search(r"\bjob\b.{0,80}\b(has|is)\s+expired\b", page_text):
+            print(f"[direct_apply] Expired posting at {apply_url}")
+            return "expired"
 
         # Fill common form fields by label/placeholder heuristics
         field_map = {
@@ -387,26 +392,64 @@ async def attempt_direct_apply(page: Page, job: dict, resume_path: str, submit: 
 
         if not submit:
             print(f"[direct_apply] Opened/prepared form for {job['title']} @ {job['company']} (not submitted)")
-            return False
+            return "manual_apply_ready"
 
         # Try clicking the submit button only when explicitly enabled.
-        submit_btn = await page.query_selector(
-            "button[type='submit'], input[type='submit'], "
-            "button:has-text('Apply'), button:has-text('Submit')"
+        submit_handle = await page.evaluate_handle(
+            """() => {
+                const banned = /find jobs|search|subscribe|alert|sign in|log in/i;
+                const positive = /apply|submit|send application|continue/i;
+                const appField = /resume|cv|cover|phone|email|linkedin|first.?name|last.?name|full.?name|candidate|applicant/i;
+                const controls = [...document.querySelectorAll("button, input[type='submit'], input[type='button'], a")];
+                for (const control of controls) {
+                    const text = (control.innerText || control.value || control.getAttribute("aria-label") || "").trim();
+                    if (!text || banned.test(text) || !positive.test(text)) continue;
+                    const form = control.closest("form");
+                    const scope = form || control.closest("main, article, section, div") || document.body;
+                    const scopeText = (scope.innerText || "") + " " + [...scope.querySelectorAll("input, textarea, select")]
+                        .map((field) => [
+                            field.name,
+                            field.id,
+                            field.placeholder,
+                            field.getAttribute("aria-label"),
+                            field.type,
+                        ].filter(Boolean).join(" "))
+                        .join(" ");
+                    if (appField.test(scopeText)) return control;
+                }
+                return null;
+            }"""
         )
+        submit_btn = submit_handle.as_element()
         if submit_btn:
+            before_url = page.url
             await submit_btn.click()
             await page.wait_for_timeout(2500)
-            print(f"[direct_apply] Submitted form for {job['title']} @ {job['company']}")
-            return True
+            confirmation_text = (await page.locator("body").inner_text(timeout=5000)).lower()
+            confirmed = any(
+                phrase in confirmation_text
+                for phrase in (
+                    "application submitted",
+                    "application received",
+                    "thank you for applying",
+                    "thanks for applying",
+                    "your application has been submitted",
+                    "we received your application",
+                )
+            )
+            if confirmed:
+                print(f"[direct_apply] Confirmed submission for {job['title']} @ {job['company']}")
+                return "applied"
+            print(f"[direct_apply] Clicked apply/submit but could not verify submission for {job['title']} @ {job['company']}")
+            return "submission_unverified" if page.url != before_url else "no_confirmation"
         else:
-            print(f"[direct_apply] No submit button found at {apply_url}")
-            return False
+            print(f"[direct_apply] No real application submit button found at {apply_url}")
+            return "no_application_form"
 
     except Exception as e:
         print(f"[direct_apply] Error: {e}")
         traceback.print_exc()
-        return False
+        return "error"
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +544,7 @@ async def run() -> None:
                         resume_path = ""
 
                     if resume_path:
-                        success = await attempt_direct_apply(
+                        apply_status = await attempt_direct_apply(
                             page,
                             job,
                             resume_path,
@@ -513,7 +556,7 @@ async def run() -> None:
                             "location": job["location"],
                             "url": job.get("apply_urls", [""])[0],
                             "score": score,
-                            "status": "applied" if success else "manual_apply_ready",
+                            "status": apply_status,
                             "resume": resume_path,
                             "applied_at": datetime.utcnow().isoformat() + "Z",
                             "follow_up_sent": False,
