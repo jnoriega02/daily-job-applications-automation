@@ -199,7 +199,7 @@ Do not run the full daily job until your profile details, resumes, and filters a
 In Codex, ask:
 
 ```text
-Create a daily local automation named "Daily Job Applications" at 8:30 AM.
+Create a daily local automation named "Daily Job Applications" at 7:00 AM.
 
 Workspace:
 C:\Dev\Scheduled\daily-job-applications
@@ -218,7 +218,7 @@ Keep the automation active.
 Recommended Codex automation settings:
 
 - Kind: cron / scheduled automation
-- Time: daily at 8:30 AM local time
+- Time: daily at 7:00 AM local time
 - Environment: local
 - Workspace: `C:\Dev\Scheduled\daily-job-applications`
 - Reasoning effort: medium
@@ -289,4 +289,3 @@ Before turning on the daily schedule:
 - Keep maximum applications per day at a number you are comfortable with.
 - Do not share cookies, browser profile folders, or application logs.
 - Watch the first few runs manually.
-

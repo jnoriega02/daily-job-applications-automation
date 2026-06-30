@@ -9,9 +9,10 @@ This repository is a template. Before running it, replace all placeholder candid
 - Checks yesterday's applications and attempts LinkedIn follow-ups.
 - Searches LinkedIn for fresh jobs matching your target roles.
 - Scores and filters jobs by location, skills, seniority, agency/contract status, and recency.
-- Generates tailored `.docx` resumes.
+- Generates tailored one-page `.docx` resumes using a standard ATS-friendly format and XYZ-style bullets.
 - Attempts LinkedIn Easy Apply where possible.
-- Searches Google Jobs and queues qualifying external listings for review.
+- Runs Indeed search/direct-apply or queue flow when configured.
+- Google Jobs support is included but paused by default in the daily runner.
 - Writes run history and application records locally.
 
 ## Important Safety Note
@@ -52,6 +53,7 @@ Edit these files before running:
 - `google_jobs.py`
 - `follow_up.py`
 - `resume_tailor.py`
+- `build_master_resume.py`
 - `filters.py`
 
 Replace placeholders such as:
@@ -75,7 +77,21 @@ Also update:
 
 ## Resume Setup
 
-Create your own resume variants and upload them to LinkedIn:
+Edit `build_master_resume.py` first. Replace placeholder candidate details, experience, skills, projects, and leadership entries with your own content.
+
+Use XYZ-style bullets:
+
+```text
+Achieved X for Y scale/audience by doing Z with specific tools.
+```
+
+Then generate one-page resume variants:
+
+```powershell
+python build_master_resume.py
+```
+
+Generated local variants include:
 
 - `Resume_SoftwareEngineer.docx`
 - `Resume_DataEngineer.docx`
@@ -91,7 +107,7 @@ Store local copies in:
 tailored_resumes\
 ```
 
-Do not commit actual resume files.
+Do not commit actual resume files. The public `.gitignore` blocks `.docx`, `.pdf`, and `tailored_resumes/*` by default.
 
 ## LinkedIn Setup
 
@@ -148,7 +164,9 @@ Steps:
 
 1. `follow_up.py`
 2. `linkedin_jobs.py`
-3. `google_jobs.py`
+3. `indeed_jobs.py`
+
+Google Jobs is paused by default. Enable it intentionally after reviewing the implementation and site behavior.
 
 Each step is isolated. If one fails, the next still runs and the failure is logged.
 
@@ -157,7 +175,7 @@ Each step is isolated. If one fails, the next still runs and the failure is logg
 Ask Codex:
 
 ```text
-Create a daily local automation named "Daily Job Applications" at 8:30 AM.
+Create a daily local automation named "Daily Job Applications" at 7:00 AM.
 
 Workspace:
 C:\Path\To\daily-job-applications
@@ -176,7 +194,7 @@ Keep the automation active.
 Recommended automation settings:
 
 - Kind: cron / scheduled automation
-- Time: daily at 8:30 AM local time
+- Time: daily at 7:00 AM local time
 - Environment: local
 - Workspace: this repo folder
 - Reasoning effort: medium
