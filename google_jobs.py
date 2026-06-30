@@ -36,7 +36,8 @@ RESUMES_DIR = BASE_DIR / "tailored_resumes"
 RESUMES_DIR.mkdir(exist_ok=True)
 
 SCORE_THRESHOLD = 6.0
-AUTO_DIRECT_APPLY = False
+OPEN_DIRECT_APPLY_LINKS = True
+AUTO_DIRECT_APPLY = True
 
 # ATS platforms that require account creation — skip direct apply for these
 ATS_BLOCKLIST = {
@@ -312,10 +313,10 @@ async def extract_google_jobs(page: Page) -> list[dict]:
 # Direct apply via Playwright form fill
 # ---------------------------------------------------------------------------
 
-async def attempt_direct_apply(page: Page, job: dict, resume_path: str) -> bool:
+async def attempt_direct_apply(page: Page, job: dict, resume_path: str, submit: bool = False) -> bool:
     """
-    For jobs with a non-ATS direct apply URL, try to fill and submit the form.
-    Returns True if form was submitted.
+    For jobs with a non-ATS direct apply URL, open the apply page and fill what
+    can be matched safely. Only submits the form when submit=True.
     """
     direct_urls = [u for u in job.get("apply_urls", []) if not _is_ats_url(u)]
     if not direct_urls:
@@ -384,7 +385,11 @@ async def attempt_direct_apply(page: Page, job: dict, resume_path: str) -> bool:
             except Exception:
                 continue
 
-        # Try clicking the submit button
+        if not submit:
+            print(f"[direct_apply] Opened/prepared form for {job['title']} @ {job['company']} (not submitted)")
+            return False
+
+        # Try clicking the submit button only when explicitly enabled.
         submit_btn = await page.query_selector(
             "button[type='submit'], input[type='submit'], "
             "button:has-text('Apply'), button:has-text('Submit')"
@@ -483,9 +488,9 @@ async def run() -> None:
                     _save_queue(queue)
                     print(f"[queue] Added: {job['title']} @ {job['company']}")
 
-                # Google external apply pages are queued for manual review by default.
+                # Open direct apply pages and prepare them; submit only when explicitly enabled.
                 has_direct = any(not _is_ats_url(u) for u in job.get("apply_urls", []))
-                if has_direct and AUTO_DIRECT_APPLY:
+                if has_direct and (OPEN_DIRECT_APPLY_LINKS or AUTO_DIRECT_APPLY):
                     safe_company = re.sub(r"[^\w]", "_", job["company"])[:30]
                     safe_title = re.sub(r"[^\w]", "_", job["title"])[:30]
                     resume_path = str(RESUMES_DIR / f"resume_{safe_title}_{safe_company}.docx")
@@ -496,14 +501,19 @@ async def run() -> None:
                         resume_path = ""
 
                     if resume_path:
-                        success = await attempt_direct_apply(page, job, resume_path)
+                        success = await attempt_direct_apply(
+                            page,
+                            job,
+                            resume_path,
+                            submit=AUTO_DIRECT_APPLY,
+                        )
                         log.append({
                             "title": job["title"],
                             "company": job["company"],
                             "location": job["location"],
                             "url": job.get("apply_urls", [""])[0],
                             "score": score,
-                            "status": "applied" if success else "queued",
+                            "status": "applied" if success else "manual_apply_ready",
                             "resume": resume_path,
                             "applied_at": datetime.utcnow().isoformat() + "Z",
                             "follow_up_sent": False,
