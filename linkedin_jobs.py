@@ -56,30 +56,30 @@ PROFILE = {
 
 # Search URLs — customize these for your target roles and locations.
 SEARCH_URLS = [
-    # Local hybrid + onsite, Easy Apply, last 5 days
+    # Local hybrid + onsite, Easy Apply, last 24 hours
     (
         "https://www.linkedin.com/jobs/search/"
         "?keywords=software+engineer+OR+data+engineer"
         "&location=Your+City"
-        "&f_TPR=r432000&f_WT=3%2C1&f_AL=true"
+        "&f_TPR=r86400&f_WT=3%2C1&f_AL=true"
     ),
-    # Local ML/AI/TPM, last 5 days
+    # Local ML/AI/TPM, last 24 hours
     (
         "https://www.linkedin.com/jobs/search/"
         "?keywords=ml+engineer+OR+ai+engineer+OR+technical+product+manager"
         "&location=Your+City"
-        "&f_TPR=r432000&f_WT=3%2C1"
+        "&f_TPR=r86400&f_WT=3%2C1"
     ),
-    # US remote Easy Apply fallback, last 5 days
+    # US remote Easy Apply fallback, last 24 hours
     (
         "https://www.linkedin.com/jobs/search/"
         "?keywords=software+engineer+OR+data+engineer"
         "&location=United+States"
-        "&f_TPR=r432000&f_WT=2&f_AL=true"
+        "&f_TPR=r86400&f_WT=2&f_AL=true"
     ),
 ]
 
-SEARCH_PAGE_STARTS = (0, 25, 50, 75)
+SEARCH_PAGE_STARTS = (0, 25)
 
 
 # ---------------------------------------------------------------------------

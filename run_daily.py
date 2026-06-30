@@ -1,17 +1,17 @@
 """
-run_daily.py — Daily orchestrator for the job application automation.
+run_daily.py â€” Daily orchestrator for the job application automation.
 
 Runs in order:
-  1. follow_up.py  — send connection requests for yesterday's applications
-  2. linkedin_jobs.py — search + Easy Apply on LinkedIn
-  3. google_jobs.py   — search Google Jobs, queue + direct apply
+  1. follow_up.py  â€” send connection requests for yesterday's applications
+  2. linkedin_jobs.py â€” search + Easy Apply on LinkedIn
+  3. indeed_jobs.py   - search Indeed, queue + direct apply
 
 Each step runs independently; failures are caught and logged so the next
 step always executes.
 
 Schedule via Windows Task Scheduler:
   Action: python C:\\Dev\\Scheduled\\daily-job-applications\\run_daily.py
-  Trigger: Daily at 9:00 AM
+  Trigger: Daily at 7:00 AM
 """
 
 import argparse
@@ -32,7 +32,7 @@ RUN_LOG_FILE = BASE_DIR / "run-log.json"
 STEPS = [
     ("follow_up",    "follow_up.py",    "Follow up on yesterday's applications"),
     ("linkedin",     "linkedin_jobs.py", "LinkedIn search + Easy Apply"),
-    ("google",       "google_jobs.py",   "Google Jobs search + queue"),
+    ("indeed",       "indeed_jobs.py",   "Indeed search + direct apply"),
 ]
 
 
@@ -70,7 +70,7 @@ def health_check() -> int:
 
     json_files = [
         BASE_DIR / "applications-log.json",
-        BASE_DIR / "google_jobs_queue.json",
+        BASE_DIR / "indeed_jobs_queue.json",
         RUN_LOG_FILE,
     ]
     bad_json = []
@@ -172,7 +172,7 @@ def main() -> None:
         raise SystemExit(health_check())
 
     print(f"\n{'#'*60}")
-    print(f"  Daily Job Application Run — {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    print(f"  Daily Job Application Run â€” {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"{'#'*60}")
 
     run_log = _load_run_log()
@@ -196,7 +196,7 @@ def main() -> None:
     print("DAILY RUN SUMMARY")
     print(f"{'='*60}")
     for r in run_results:
-        icon = "✓" if r["status"] == "success" else "✗"
+        icon = "âœ“" if r["status"] == "success" else "âœ—"
         print(f"  {icon} {r['step']}: {r['status']}")
         if r.get("error"):
             print(f"      Error: {r['error'][:200]}")
