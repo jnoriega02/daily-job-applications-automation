@@ -23,7 +23,7 @@ from pathlib import Path
 
 from playwright.async_api import async_playwright, Page, BrowserContext, TimeoutError as PWTimeout
 
-from filters import is_contractor_role, is_agency_role, is_fake_posting, score_job
+from filters import is_contractor_role, is_agency_role, is_entry_level_role, is_fake_posting, score_job
 from job_utils import already_seen, load_json_list, save_json_atomic
 from resume_tailor import tailor_resume
 
@@ -196,38 +196,63 @@ async def scroll_and_extract_jobs(page: Page) -> list[dict]:
         except Exception:
             break  # Page navigated away; stop scrolling
 
-    # Extract job cards
-    cards = await page.query_selector_all("div.job-search-card, li.jobs-search-results__list-item")
-    for card in cards:
-        try:
-            title_el = await card.query_selector("a.job-card-list__title, h3.base-search-card__title")
-            company_el = await card.query_selector("h4.base-search-card__subtitle, a.job-card-container__company-name")
-            location_el = await card.query_selector("span.job-search-card__location")
-            meta_el = await card.query_selector("time")
-            link_el = await card.query_selector("a.base-card__full-link, a.job-card-list__title")
-            easy_apply_el = await card.query_selector("span.job-card-container__apply-method")
+    # LinkedIn changes class names frequently. Prefer stable job id/link
+    # attributes and parse visible card text as a fallback.
+    try:
+        jobs = await page.evaluate(
+            """() => {
+                const cards = [...document.querySelectorAll(
+                    'li[data-occludable-job-id], li.jobs-search-results__list-item, div[data-job-id]'
+                )];
+                const seen = new Set();
+                return cards.map((card) => {
+                    const link = card.querySelector('a[href*="/jobs/view/"]');
+                    const href = link ? link.href.split('?')[0] : '';
+                    const idMatch = href.match(/\\/jobs\\/view\\/(\\d+)/);
+                    const jobId = card.getAttribute('data-occludable-job-id')
+                        || card.querySelector('[data-job-id]')?.getAttribute('data-job-id')
+                        || (idMatch ? idMatch[1] : '');
+                    if (!href && !jobId) return null;
+                    const key = jobId || href;
+                    if (seen.has(key)) return null;
+                    seen.add(key);
 
-            title = (await title_el.inner_text()).strip() if title_el else ""
-            company = (await company_el.inner_text()).strip() if company_el else ""
-            location = (await location_el.inner_text()).strip() if location_el else ""
-            href = await link_el.get_attribute("href") if link_el else ""
-            job_id = re.search(r"/jobs/view/(\d+)", href or "")
-            job_id = job_id.group(1) if job_id else ""
-            easy_apply_text = (await easy_apply_el.inner_text()).strip() if easy_apply_el else ""
-            has_easy_apply = "easy apply" in easy_apply_text.lower()
+                    const rawLines = (card.innerText || '')
+                        .split('\\n')
+                        .map((line) => line.trim())
+                        .filter(Boolean)
+                        .filter((line) => !/^promoted$/i.test(line))
+                        .filter((line) => !/^viewed$/i.test(line))
+                        .filter((line) => !/^actively reviewing applicants$/i.test(line));
 
-            if title and company:
-                jobs.append({
-                    "title": title,
-                    "company": company,
-                    "location": location,
-                    "work_type": "",          # enriched after clicking into listing
-                    "job_id": job_id,
-                    "url": href.split("?")[0] if href else "",
-                    "has_easy_apply": has_easy_apply,
-                })
-        except Exception:
-            continue
+                    const title =
+                        link?.getAttribute('aria-label')?.replace(/^View job: /i, '').trim()
+                        || rawLines[0]
+                        || '';
+                    const company = rawLines.find((line, index) =>
+                        index > 0
+                        && !/easy apply|applied|viewed|promoted|ago|applicant/i.test(line)
+                        && !/,|remote|hybrid|on-site|onsite|united states/i.test(line)
+                    ) || rawLines[1] || '';
+                    const location = rawLines.find((line) =>
+                        /remote|hybrid|on-site|onsite|united states|, [A-Z]{2}\\b|metroplex|area/i.test(line)
+                    ) || '';
+
+                    return {
+                        title,
+                        company,
+                        location,
+                        work_type: '',
+                        job_id: jobId,
+                        url: href,
+                        has_easy_apply: /easy apply/i.test(card.innerText || ''),
+                    };
+                }).filter((job) => job && job.title && job.company);
+            }"""
+        )
+    except Exception as e:
+        print(f"[extract] Browser-side extraction failed: {e}")
+        jobs = []
 
     return jobs
 
@@ -514,6 +539,13 @@ def _already_logged(log: list[dict], job: dict) -> bool:
     return already_seen(log, job)
 
 
+def _title_company_key(job: dict) -> tuple[str, str]:
+    return (
+        (job.get("title") or "").strip().lower(),
+        (job.get("company") or "").strip().lower(),
+    )
+
+
 def _log_application(job: dict, status: str, score: float, resume_path: str) -> None:
     log = _load_log()
     log.append({
@@ -539,6 +571,11 @@ def _log_application(job: dict, status: str, score: float, resume_path: str) -> 
 async def run() -> None:
     log = _load_log()
     applied_count = 0
+    seen_title_company = {
+        _title_company_key(entry)
+        for entry in log
+        if entry.get("title") and entry.get("company")
+    }
 
     # Use a dedicated persistent profile for automation (avoids conflict with running Chrome)
     user_data_dir = str(BASE_DIR / "chrome_profile")
@@ -601,7 +638,8 @@ async def run() -> None:
                     break
 
                 # Skip already applied
-                if _already_logged(log, job):
+                title_company_key = _title_company_key(job)
+                if _already_logged(log, job) or title_company_key in seen_title_company:
                     print(f"[skip] Already applied: {job['title']} @ {job['company']}")
                     continue
 
@@ -621,6 +659,11 @@ async def run() -> None:
                 if is_fake_posting(job["title"], job["company"], job["description"]):
                     print(f"[filter] Fake posting: {job['title']} @ {job['company']}")
                     continue
+                if not is_entry_level_role(job["title"], job["description"]):
+                    print(f"[filter] Not entry/junior: {job['title']} @ {job['company']}")
+                    _log_application(job, "skipped_not_entry_level", 0.0, "")
+                    seen_title_company.add(title_company_key)
+                    continue
 
                 score = score_job(
                     job["title"], job["company"], job["location"],
@@ -630,6 +673,7 @@ async def run() -> None:
 
                 if score < SCORE_THRESHOLD:
                     _log_application(job, "skipped", score, "")
+                    seen_title_company.add(title_company_key)
                     continue
 
                 # --- Tailor resume ---
@@ -661,6 +705,7 @@ async def run() -> None:
                     status = "skipped_no_easy_apply"
 
                 _log_application(job, status, score, resume_path)
+                seen_title_company.add(title_company_key)
                 if status == "applied":
                     applied_count += 1
                     print(f"[progress] {applied_count}/{MAX_APPLICATIONS} applications submitted")

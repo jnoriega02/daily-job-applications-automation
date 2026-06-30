@@ -76,14 +76,45 @@ _SKILL_KEYWORDS = {
 _EXPERIENCE_LEVEL_GOOD = {
     "junior", "entry level", "entry-level", "0-2 years", "1-3 years",
     "0-3 years", "new grad", "new graduate", "associate", "associate level",
-    "early career",
+    "early career", "swe i", "software engineer i", "engineer i",
+    "developer i", "analyst i", "level 1", "level i",
 }
 
 _EXPERIENCE_LEVEL_BAD = {
-    "senior", "staff", "principal", "lead", "director", "manager",
-    "5+ years", "7+ years", "8+ years", "10+ years", "15+ years",
-    "vp", "vice president", "head of", "architect",
+    "senior", "sr.", "sr ", "staff", "principal", "lead", "director",
+    "manager", "architect", "expert", "iii", "iv", "level 3", "level 4",
+    "5+ years", "6+ years", "7+ years", "8+ years", "10+ years",
+    "15+ years", "5 years", "6 years", "7 years", "8 years",
+    "10 years", "vp", "vice president", "head of",
 }
+
+_ENTRY_TITLE_KEYWORDS = {
+    "junior", "jr", "entry level", "entry-level", "new grad",
+    "new graduate", "graduate", "associate", "swe i",
+    "software engineer i", "engineer i", "developer i", "analyst i",
+}
+
+_MID_OR_SENIOR_TITLE_KEYWORDS = {
+    "senior", "sr.", "sr ", "staff", "principal", "lead", "manager",
+    "director", "architect", "iii", "iv",
+}
+
+_LOW_YEARS_PATTERNS = [
+    r"\b0\s*[-–]\s*2\s+years?\b",
+    r"\b0\s*[-–]\s*3\s+years?\b",
+    r"\b1\s*[-–]\s*2\s+years?\b",
+    r"\b1\s*[-–]\s*3\s+years?\b",
+    r"\b0\+?\s+years?\b",
+    r"\b1\+?\s+years?\b",
+    r"\b2\+?\s+years?\b",
+    r"\b3\+?\s+years?\b",
+]
+
+_HIGH_YEARS_PATTERNS = [
+    r"\b[5-9]\+?\s+years?\b",
+    r"\b1[0-9]\+?\s+years?\b",
+    r"\b[5-9]\s*[-–]\s*[0-9]+\s+years?\b",
+]
 
 _DFW_KEYWORDS = {
     "dallas", "fort worth", "dfw", "irving", "plano", "frisco",
@@ -170,6 +201,29 @@ def is_fake_posting(title: str, company: str, description: str) -> bool:
     return False
 
 
+def is_entry_level_role(title: str, description: str) -> bool:
+    """
+    Return True only for roles that are clearly junior/entry/associate/new-grad
+    or explicitly ask for no more than about 0-3 years of experience.
+    """
+    title_norm = _normalize(title)
+    desc_norm = _normalize(description)
+    combined = f"{title_norm} {desc_norm}"
+
+    if any(kw in title_norm for kw in _MID_OR_SENIOR_TITLE_KEYWORDS):
+        return False
+    if any(kw in combined for kw in _EXPERIENCE_LEVEL_BAD):
+        return False
+    if any(re.search(pattern, combined) for pattern in _HIGH_YEARS_PATTERNS):
+        return False
+
+    title_has_entry_signal = any(kw in title_norm for kw in _ENTRY_TITLE_KEYWORDS)
+    desc_has_entry_signal = any(kw in combined for kw in _EXPERIENCE_LEVEL_GOOD)
+    has_low_years = any(re.search(pattern, combined) for pattern in _LOW_YEARS_PATTERNS)
+
+    return title_has_entry_signal or desc_has_entry_signal or has_low_years
+
+
 def score_job(
     title: str,
     company: str,
@@ -217,13 +271,12 @@ def score_job(
     score += min(matched / 4.0, 1.0) * 3.0
 
     # --- Experience level fit (0–2) ---
-    has_good = any(kw in combined for kw in _EXPERIENCE_LEVEL_GOOD)
+    has_good = is_entry_level_role(title, description)
     has_bad = any(kw in combined for kw in _EXPERIENCE_LEVEL_BAD)
-    if has_good and not has_bad:
+    if has_good:
         score += 2.0
     elif not has_bad:
-        score += 1.0   # No explicit level → neutral
-    # Senior-only → 0
+        score -= 2.0   # Unknown seniority is too risky for auto-apply.
 
     # --- Clean company + title (0–1) ---
     if not is_agency_role(company) and not is_contractor_role(title, description):

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from playwright.async_api import async_playwright, Page, TimeoutError as PWTimeout
 
-from filters import is_contractor_role, is_agency_role, is_fake_posting, score_job
+from filters import is_contractor_role, is_agency_role, is_entry_level_role, is_fake_posting, score_job
 from job_utils import already_seen, load_json_list, save_json_atomic
 from resume_tailor import tailor_resume
 
@@ -327,6 +327,9 @@ async def run() -> None:
                     continue
                 if is_fake_posting(job["title"], job["company"], job["description"]):
                     print(f"[filter] Fake: {job['title']} @ {job['company']}")
+                    continue
+                if not is_entry_level_role(job["title"], job["description"]):
+                    print(f"[filter] Not entry/junior: {job['title']} @ {job['company']}")
                     continue
 
                 score = score_job(
