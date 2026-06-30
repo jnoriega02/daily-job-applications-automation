@@ -490,6 +490,8 @@ async def run() -> None:
             print(f"[search] Extracted {len(jobs)} raw listings")
 
             for job in jobs:
+                if job.get("apply_urls") and not job.get("url"):
+                    job["url"] = job["apply_urls"][0]
                 if already_seen(log, job):
                     print(f"[skip] Already logged: {job['title']} @ {job['company']}")
                     continue
