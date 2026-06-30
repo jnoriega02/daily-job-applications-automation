@@ -72,8 +72,19 @@ def _get_yesterday_entries(log: list[dict]) -> list[dict]:
     for entry in log:
         if entry.get("follow_up_sent"):
             continue
+        status = (entry.get("status") or "").lower()
+        applied_via = (entry.get("applied_via") or "").lower()
+        if status not in {"applied", "verified_applied"} and "apply" not in applied_via:
+            continue
         applied_str = entry.get("applied_at", "")
         if not applied_str:
+            legacy_date = entry.get("date", "")
+            if legacy_date:
+                try:
+                    if datetime.fromisoformat(legacy_date).date() == yesterday:
+                        results.append(entry)
+                except ValueError:
+                    pass
             continue
         try:
             applied_date = datetime.fromisoformat(applied_str.replace("Z", "+00:00")).date()

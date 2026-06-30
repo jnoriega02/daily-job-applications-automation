@@ -490,27 +490,46 @@ async def easy_apply(page: Page, job: dict) -> bool:
         await easy_apply_btn.click()
         await page.wait_for_timeout(2000)
 
+        submitted = False
+
         # Work through modal steps (up to 10 steps max)
         for step_num in range(10):
             result = await _handle_modal_step(page)
             print(f"[apply] Step {step_num + 1}: {result}")
-            if result in ("submit", "done"):
+            if result == "submit":
+                submitted = True
+                break
+            if result == "done":
                 break
             await page.wait_for_timeout(1500)
 
-        # Check for success/confirmation message
+        # Check for success/confirmation message. Do not assume a closed modal
+        # means the application was submitted; LinkedIn can close or fail before
+        # the final submit step.
         await page.wait_for_timeout(2000)
-        body_text = await page.inner_text("body")
-        if any(x in body_text.lower() for x in ("application submitted", "applied", "your application was sent")):
+        body_text = (await page.inner_text("body")).lower()
+        success_markers = (
+            "application submitted",
+            "your application was sent",
+            "application was sent",
+            "you applied",
+        )
+        if any(marker in body_text for marker in success_markers):
             print(f"[apply] ✓ Applied to {job['title']} @ {job['company']}")
             return True
 
-        # If modal is gone, assume success (LinkedIn sometimes closes without explicit message)
-        modal = await page.query_selector("div.jobs-easy-apply-modal")
-        if not modal:
-            print(f"[apply] ✓ Modal closed — assuming submitted for {job['title']} @ {job['company']}")
+        applied_button = await page.query_selector(
+            "button[aria-label*='Applied'], "
+            "button:has-text('Applied')"
+        )
+        if submitted and applied_button:
+            print(f"[apply] ✓ Applied state detected for {job['title']} @ {job['company']}")
             return True
 
+        if not submitted:
+            print(f"[apply] No submit confirmation for {job['title']} @ {job['company']}")
+        else:
+            print(f"[apply] Submit clicked but no confirmation detected for {job['title']} @ {job['company']}")
         return False
 
     except Exception as e:
