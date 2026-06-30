@@ -13,6 +13,7 @@ Run: python indeed_jobs.py
 
 import asyncio
 import json
+import os
 import re
 import traceback
 from datetime import datetime
@@ -33,8 +34,8 @@ RESUMES_DIR = BASE_DIR / "tailored_resumes"
 RESUMES_DIR.mkdir(exist_ok=True)
 
 SCORE_THRESHOLD = 5.5
-MAX_APPLICATIONS = 25
-AUTO_DIRECT_APPLY = True
+MAX_APPLICATIONS = int(os.getenv("INDEED_MAX_APPLICATIONS", "25"))
+AUTO_DIRECT_APPLY = False
 
 PROFILE = {
     "name": "Your Name",
@@ -54,12 +55,27 @@ PROFILE = {
 SEARCH_URLS = [
     (
         "https://www.indeed.com/jobs"
-        "?q=junior+software+engineer+OR+entry+level+software+engineer+OR+junior+data+engineer"
+        "?q=junior+software+engineer"
         "&l=Your+City&fromage=1&sort=date"
     ),
     (
         "https://www.indeed.com/jobs"
-        "?q=junior+software+engineer+OR+junior+data+engineer"
+        "?q=entry+level+software+engineer"
+        "&l=Your+City&fromage=1&sort=date"
+    ),
+    (
+        "https://www.indeed.com/jobs"
+        "?q=junior+data+engineer"
+        "&l=Your+City&fromage=1&sort=date"
+    ),
+    (
+        "https://www.indeed.com/jobs"
+        "?q=junior+software+engineer"
+        "&l=Remote&fromage=1&sort=date"
+    ),
+    (
+        "https://www.indeed.com/jobs"
+        "?q=junior+data+engineer"
         "&l=Remote&fromage=1&sort=date"
     ),
 ]
@@ -93,8 +109,20 @@ def _is_indeed_url(url: str) -> bool:
     return "indeed." in host
 
 
+def _is_bad_indeed_job(job: dict) -> bool:
+    url = job.get("url", "")
+    description = (job.get("description") or "").lower()
+    return (
+        "jk=789abcdef0123456" in url
+        or "we can\u2019t find this page" in description
+        or "we can't find this page" in description
+        or "page doesn't exist" in description
+        or "additional verification required" in description
+    )
+
+
 async def extract_indeed_jobs(page: Page) -> list[dict]:
-    if "blocked" in page.url.lower() or "challenge" in page.url.lower():
+    if "blocked" in page.url.lower() or "challenge" in page.url.lower() or "bot-detection" in page.url.lower():
         print("[indeed] Challenge/block page detected.")
         return []
 
@@ -149,6 +177,10 @@ async def extract_indeed_jobs(page: Page) -> list[dict]:
                 })"""
             )
             job["description"] = detail.get("text", "")[:5000]
+            if _is_bad_indeed_job(job):
+                print(f"[indeed] Ignoring invalid/degraded listing: {job.get('title', '')} @ {job.get('company', '')}")
+                job["invalid"] = True
+                continue
             urls = []
             for item in detail.get("links", []):
                 href = item.get("href", "")
@@ -158,7 +190,46 @@ async def extract_indeed_jobs(page: Page) -> list[dict]:
         except Exception as exc:
             print(f"[indeed] Could not enrich {job.get('title', '')}: {exc}")
 
-    return jobs
+    return [job for job in jobs if not job.get("invalid")]
+
+
+async def handle_indeed_challenge(page: Page, timeout: int = 180_000) -> bool:
+    page_text = ""
+    try:
+        page_text = (await page.locator("body").inner_text(timeout=5000)).lower()
+    except Exception:
+        pass
+
+    challenge_detected = (
+        "bot-detection" in page.url.lower()
+        or "additional verification required" in page_text
+        or "just a moment" in (await page.title()).lower()
+    )
+    if not challenge_detected:
+        return True
+
+    print("\n[indeed] Verification required.")
+    print("[indeed] Please complete the Indeed verification or sign-in in the browser window.")
+    print(f"[indeed] Waiting up to {timeout // 1000}s...\n")
+    try:
+        await page.wait_for_function(
+            """() => {
+                const text = (document.body.innerText || '').toLowerCase();
+                return !location.href.includes('bot-detection')
+                    && !text.includes('additional verification required')
+                    && (
+                        document.querySelectorAll('[data-jk], .job_seen_beacon, a[href*="/viewjob"]').length > 0
+                        || location.href.includes('/jobs')
+                    );
+            }""",
+            timeout=timeout,
+        )
+        await page.wait_for_timeout(2000)
+        print("[indeed] Verification resolved. Continuing.")
+        return True
+    except Exception:
+        print("[indeed] Verification was not resolved in time.")
+        return False
 
 
 async def attempt_direct_apply(page: Page, job: dict, resume_path: str) -> str:
@@ -285,6 +356,8 @@ async def run() -> None:
             except Exception as exc:
                 print(f"[search] Failed: {exc}")
                 continue
+            if not await handle_indeed_challenge(page):
+                continue
 
             jobs = await extract_indeed_jobs(page)
             print(f"[search] Extracted {len(jobs)} listings")
@@ -292,6 +365,9 @@ async def run() -> None:
             for job in jobs:
                 if applied_count >= MAX_APPLICATIONS:
                     break
+                if _is_bad_indeed_job(job):
+                    print(f"[filter] Invalid Indeed listing: {job['title']} @ {job['company']}")
+                    continue
                 if already_seen(log, job):
                     print(f"[skip] Already logged: {job['title']} @ {job['company']}")
                     continue
