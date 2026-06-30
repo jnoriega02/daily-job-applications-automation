@@ -37,8 +37,8 @@ LOG_FILE = BASE_DIR / "applications-log.json"
 RESUMES_DIR = BASE_DIR / "tailored_resumes"
 RESUMES_DIR.mkdir(exist_ok=True)
 
-SCORE_THRESHOLD = 6.0
-MAX_APPLICATIONS = 5
+SCORE_THRESHOLD = 5.5
+MAX_APPLICATIONS = 50
 
 PROFILE = {
     "name": "Your Name",
@@ -56,28 +56,30 @@ PROFILE = {
 
 # Search URLs — customize these for your target roles and locations.
 SEARCH_URLS = [
-    # Local hybrid + onsite, Easy Apply, last 24h
+    # Local hybrid + onsite, Easy Apply, last 5 days
     (
         "https://www.linkedin.com/jobs/search/"
         "?keywords=software+engineer+OR+data+engineer"
         "&location=Your+City"
-        "&f_TPR=r86400&f_WT=3%2C1&f_AL=true"
+        "&f_TPR=r432000&f_WT=3%2C1&f_AL=true"
     ),
-    # Local ML/AI/TPM, last 24h
+    # Local ML/AI/TPM, last 5 days
     (
         "https://www.linkedin.com/jobs/search/"
         "?keywords=ml+engineer+OR+ai+engineer+OR+technical+product+manager"
         "&location=Your+City"
-        "&f_TPR=r86400&f_WT=3%2C1"
+        "&f_TPR=r432000&f_WT=3%2C1"
     ),
-    # US remote Easy Apply fallback, last 24h
+    # US remote Easy Apply fallback, last 5 days
     (
         "https://www.linkedin.com/jobs/search/"
         "?keywords=software+engineer+OR+data+engineer"
         "&location=United+States"
-        "&f_TPR=r86400&f_WT=2&f_AL=true"
+        "&f_TPR=r432000&f_WT=2&f_AL=true"
     ),
 ]
+
+SEARCH_PAGE_STARTS = (0, 25, 50, 75)
 
 
 # ---------------------------------------------------------------------------
@@ -188,10 +190,24 @@ async def scroll_and_extract_jobs(page: Page) -> list[dict]:
     if "checkpoint" in page.url or "challenge" in page.url:
         return jobs
 
-    # Scroll the job list panel to lazy-load all cards
-    for _ in range(8):
+    # Scroll the job list panel to lazy-load more cards. LinkedIn often keeps
+    # the results in an internal scroll container instead of the page body.
+    for _ in range(18):
         try:
-            await page.evaluate("window.scrollBy(0, 600)")
+            await page.evaluate(
+                """() => {
+                    const containers = [
+                        document.querySelector('.jobs-search-results-list'),
+                        document.querySelector('.scaffold-layout__list'),
+                        document.querySelector('[aria-label*="Search results"]'),
+                        document.scrollingElement,
+                    ].filter(Boolean);
+                    for (const container of containers) {
+                        container.scrollTop = container.scrollHeight;
+                    }
+                    window.scrollBy(0, 900);
+                }"""
+            )
             await page.wait_for_timeout(600)
         except Exception:
             break  # Page navigated away; stop scrolling
@@ -449,8 +465,18 @@ async def _handle_modal_step(page: Page) -> str:
         except Exception:
             continue
 
-    # Determine which button to click
+    # Determine which button to click. LinkedIn sometimes renders plain text
+    # buttons without stable aria-labels in the /apply/ flow.
     submit_btn = await page.query_selector("button[aria-label='Submit application']")
+    if not submit_btn:
+        submit_handle = await page.evaluate_handle(
+            """() => [...document.querySelectorAll('button')]
+                .find((button) => {
+                    const text = (button.innerText || button.getAttribute('aria-label') || '').trim();
+                    return !button.disabled && /^(submit application|submit)$/i.test(text);
+                }) || null"""
+        )
+        submit_btn = submit_handle.as_element()
     if submit_btn:
         await submit_btn.click()
         return "submit"
@@ -460,6 +486,15 @@ async def _handle_modal_step(page: Page) -> str:
         "button[aria-label='Review your application'], "
         "button[aria-label='Next']"
     )
+    if not next_btn:
+        next_handle = await page.evaluate_handle(
+            """() => [...document.querySelectorAll('button')]
+                .find((button) => {
+                    const text = (button.innerText || button.getAttribute('aria-label') || '').trim();
+                    return !button.disabled && /^(next|continue|review|review your application)$/i.test(text);
+                }) || null"""
+        )
+        next_btn = next_handle.as_element()
     if next_btn:
         await next_btn.click()
         return "next"
@@ -515,7 +550,7 @@ async def easy_apply(page: Page, job: dict) -> bool:
             "you applied",
         )
         if any(marker in body_text for marker in success_markers):
-            print(f"[apply] ✓ Applied to {job['title']} @ {job['company']}")
+            print(f"[apply] OK Applied to {job['title']} @ {job['company']}")
             return True
 
         applied_button = await page.query_selector(
@@ -523,7 +558,7 @@ async def easy_apply(page: Page, job: dict) -> bool:
             "button:has-text('Applied')"
         )
         if submitted and applied_button:
-            print(f"[apply] ✓ Applied state detected for {job['title']} @ {job['company']}")
+            print(f"[apply] OK Applied state detected for {job['title']} @ {job['company']}")
             return True
 
         if not submitted:
@@ -551,11 +586,36 @@ def _save_log(entries: list[dict]) -> None:
 
 
 def _already_applied(log: list[dict], job_id: str) -> bool:
-    return any(e.get("job_id") == job_id for e in log)
+    if not job_id:
+        return False
+    return any(
+        e.get("job_id") == job_id and e.get("status") == "applied"
+        for e in log
+    )
 
 
 def _already_logged(log: list[dict], job: dict) -> bool:
     return already_seen(log, job)
+
+
+def _processed_today(log: list[dict], job: dict) -> bool:
+    today = datetime.utcnow().date().isoformat()
+    job_key = _title_company_key(job)
+    blocking_statuses = {"applied", "skipped_not_entry_level", "skipped_no_easy_apply"}
+    for entry in log:
+        if entry.get("source") != "linkedin":
+            continue
+        if entry.get("status") not in blocking_statuses:
+            continue
+        if not str(entry.get("applied_at", "")).startswith(today):
+            continue
+        if entry.get("job_id") and job.get("job_id") and entry.get("job_id") == job.get("job_id"):
+            return True
+        if entry.get("url") and job.get("url") and entry.get("url") == job.get("url"):
+            return True
+        if _title_company_key(entry) == job_key:
+            return True
+    return False
 
 
 def _title_company_key(job: dict) -> tuple[str, str]:
@@ -563,6 +623,14 @@ def _title_company_key(job: dict) -> tuple[str, str]:
         (job.get("title") or "").strip().lower(),
         (job.get("company") or "").strip().lower(),
     )
+
+
+def _iter_search_urls() -> list[str]:
+    urls = []
+    for base_url in SEARCH_URLS:
+        for start in SEARCH_PAGE_STARTS:
+            urls.append(base_url if start == 0 else f"{base_url}&start={start}")
+    return urls
 
 
 def _log_application(job: dict, status: str, score: float, resume_path: str) -> None:
@@ -590,10 +658,17 @@ def _log_application(job: dict, status: str, score: float, resume_path: str) -> 
 async def run() -> None:
     log = _load_log()
     applied_count = 0
-    seen_title_company = {
+    blocking_today_statuses = {"applied", "skipped_not_entry_level", "skipped_no_easy_apply"}
+    seen_title_company_today = {
         _title_company_key(entry)
         for entry in log
-        if entry.get("title") and entry.get("company")
+        if (
+            entry.get("source") == "linkedin"
+            and entry.get("status") in blocking_today_statuses
+            and entry.get("title")
+            and entry.get("company")
+            and str(entry.get("applied_at", "")).startswith(datetime.utcnow().date().isoformat())
+        )
     }
 
     # Use a dedicated persistent profile for automation (avoids conflict with running Chrome)
@@ -615,7 +690,7 @@ async def run() -> None:
         await ensure_logged_in(page, context)
 
         # --- Search each URL ---
-        for search_url in SEARCH_URLS:
+        for search_url in _iter_search_urls():
             if applied_count >= MAX_APPLICATIONS:
                 break
 
@@ -656,10 +731,13 @@ async def run() -> None:
                 if applied_count >= MAX_APPLICATIONS:
                     break
 
-                # Skip already applied
+                # Skip jobs already applied in the past, or already processed today.
                 title_company_key = _title_company_key(job)
-                if _already_logged(log, job) or title_company_key in seen_title_company:
-                    print(f"[skip] Already applied: {job['title']} @ {job['company']}")
+                if _already_applied(log, job.get("job_id", "")):
+                    print(f"[skip] Already applied before: {job['title']} @ {job['company']}")
+                    continue
+                if _processed_today(log, job) or title_company_key in seen_title_company_today:
+                    print(f"[skip] Already processed today: {job['title']} @ {job['company']}")
                     continue
 
                 # Quick pre-filter (no description yet)
@@ -681,7 +759,7 @@ async def run() -> None:
                 if not is_entry_level_role(job["title"], job["description"]):
                     print(f"[filter] Not entry/junior: {job['title']} @ {job['company']}")
                     _log_application(job, "skipped_not_entry_level", 0.0, "")
-                    seen_title_company.add(title_company_key)
+                    seen_title_company_today.add(title_company_key)
                     continue
 
                 score = score_job(
@@ -692,7 +770,7 @@ async def run() -> None:
 
                 if score < SCORE_THRESHOLD:
                     _log_application(job, "skipped", score, "")
-                    seen_title_company.add(title_company_key)
+                    seen_title_company_today.add(title_company_key)
                     continue
 
                 # --- Tailor resume ---
@@ -724,7 +802,7 @@ async def run() -> None:
                     status = "skipped_no_easy_apply"
 
                 _log_application(job, status, score, resume_path)
-                seen_title_company.add(title_company_key)
+                seen_title_company_today.add(title_company_key)
                 if status == "applied":
                     applied_count += 1
                     print(f"[progress] {applied_count}/{MAX_APPLICATIONS} applications submitted")
