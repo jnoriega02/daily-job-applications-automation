@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local LinkedIn/session data - never commit
+linkedin_cookies.json
+chrome_profile/
+
+# Local run outputs - never commit
+applications-log.json
+run-log.json
+google_jobs_queue.json
+*.log
+*.err
+
+# Real resumes and generated application resumes - keep local only
+tailored_resumes/*
+!tailored_resumes/.gitkeep
+*.docx
+*.pdf
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
