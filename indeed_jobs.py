@@ -36,6 +36,7 @@ RESUMES_DIR.mkdir(exist_ok=True)
 SCORE_THRESHOLD = 5.5
 MAX_APPLICATIONS = int(os.getenv("INDEED_MAX_APPLICATIONS", "25"))
 AUTO_DIRECT_APPLY = False
+ENRICH_INDEED_DETAILS = os.getenv("INDEED_ENRICH_DETAILS", "0") == "1"
 
 PROFILE = {
     "name": "Your Name",
@@ -121,6 +122,20 @@ def _is_bad_indeed_job(job: dict) -> bool:
     )
 
 
+def _is_target_role_family(job: dict) -> bool:
+    text = f"{job.get('title', '')} {job.get('description', '')}".lower()
+    role_terms = (
+        "software", "developer", "engineer", "data", "analytics", "analyst",
+        "python", "sql", "java", "javascript", "typescript", "machine learning",
+        "ml", "ai", "backend", "full stack", "frontend",
+    )
+    excluded_terms = (
+        "server", "restaurant", "photographer", "drone pilot", "real estate",
+        "special agent", "nurse", "sales associate", "cashier", "warehouse",
+    )
+    return any(term in text for term in role_terms) and not any(term in text for term in excluded_terms)
+
+
 async def extract_indeed_jobs(page: Page) -> list[dict]:
     if "blocked" in page.url.lower() or "challenge" in page.url.lower() or "bot-detection" in page.url.lower():
         print("[indeed] Challenge/block page detected.")
@@ -160,6 +175,9 @@ async def extract_indeed_jobs(page: Page) -> list[dict]:
             }).filter((job) => job && job.title && job.company);
         }"""
     )
+
+    if not ENRICH_INDEED_DETAILS:
+        return jobs
 
     for job in jobs:
         try:
@@ -367,6 +385,9 @@ async def run() -> None:
                     break
                 if _is_bad_indeed_job(job):
                     print(f"[filter] Invalid Indeed listing: {job['title']} @ {job['company']}")
+                    continue
+                if not _is_target_role_family(job):
+                    print(f"[filter] Unrelated Indeed listing: {job['title']} @ {job['company']}")
                     continue
                 if already_seen(log, job):
                     print(f"[skip] Already logged: {job['title']} @ {job['company']}")
