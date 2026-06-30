@@ -17,7 +17,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 
 # ---------------------------------------------------------------------------
-# Juviny's base resume content
+# Candidate base resume content
 # ---------------------------------------------------------------------------
 
 CONTACT = {

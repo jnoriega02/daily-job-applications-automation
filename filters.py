@@ -54,7 +54,7 @@ _FAKE_TITLE_PATTERNS = [
 ]
 
 _SKILL_KEYWORDS = {
-    # Core languages / tools Juviny has
+    # Core languages / tools for the candidate profile
     "python", "sql", "hql", "java", "javascript", "typescript",
     "react", "angular", "fastapi", "rest", "api",
     # Data engineering stack
@@ -67,7 +67,7 @@ _SKILL_KEYWORDS = {
     "computer vision", "spacy",
     # Cloud / DevOps
     "aws", "gcp", "azure", "docker", "kubernetes", "git",
-    # Roles Juviny targets
+    # Roles the candidate targets
     "software engineer", "data engineer", "backend", "full stack",
     "fullstack", "ml engineer", "ai engineer", "technical product manager",
     "tpm", "platform engineer", "analytics engineer",
@@ -130,6 +130,17 @@ _DFW_KEYWORDS = {
 def _normalize(text: str) -> str:
     """Lowercase + collapse whitespace for consistent matching."""
     return re.sub(r"\s+", " ", (text or "").lower().strip())
+
+
+def _contains_keyword(text: str, keywords: set[str]) -> bool:
+    for kw in keywords:
+        kw_norm = _normalize(kw)
+        if " " in kw_norm or "." in kw_norm or "+" in kw_norm:
+            if kw_norm in text:
+                return True
+        elif re.search(rf"\b{re.escape(kw_norm)}\b", text):
+            return True
+    return False
 
 
 def is_contractor_role(title: str, description: str) -> bool:
@@ -210,15 +221,15 @@ def is_entry_level_role(title: str, description: str) -> bool:
     desc_norm = _normalize(description)
     combined = f"{title_norm} {desc_norm}"
 
-    if any(kw in title_norm for kw in _MID_OR_SENIOR_TITLE_KEYWORDS):
+    if _contains_keyword(title_norm, _MID_OR_SENIOR_TITLE_KEYWORDS):
         return False
-    if any(kw in combined for kw in _EXPERIENCE_LEVEL_BAD):
+    if _contains_keyword(combined, _EXPERIENCE_LEVEL_BAD):
         return False
     if any(re.search(pattern, combined) for pattern in _HIGH_YEARS_PATTERNS):
         return False
 
-    title_has_entry_signal = any(kw in title_norm for kw in _ENTRY_TITLE_KEYWORDS)
-    desc_has_entry_signal = any(kw in combined for kw in _EXPERIENCE_LEVEL_GOOD)
+    title_has_entry_signal = _contains_keyword(title_norm, _ENTRY_TITLE_KEYWORDS)
+    desc_has_entry_signal = _contains_keyword(combined, _EXPERIENCE_LEVEL_GOOD)
     has_low_years = any(re.search(pattern, combined) for pattern in _LOW_YEARS_PATTERNS)
 
     return title_has_entry_signal or desc_has_entry_signal or has_low_years
@@ -232,7 +243,7 @@ def score_job(
     work_type: str,
 ) -> float:
     """
-    Score a job 0–10 based on Juviny's preferences.
+    Score a job 0–10 based on the candidate's preferences.
 
     Breakdown (max points):
       DFW hybrid/on-site location      → 3.0  (highest weight)
@@ -272,7 +283,7 @@ def score_job(
 
     # --- Experience level fit (0–2) ---
     has_good = is_entry_level_role(title, description)
-    has_bad = any(kw in combined for kw in _EXPERIENCE_LEVEL_BAD)
+    has_bad = _contains_keyword(combined, _EXPERIENCE_LEVEL_BAD)
     if has_good:
         score += 2.0
     elif not has_bad:

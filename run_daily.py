@@ -1,5 +1,5 @@
 """
-run_daily.py — Daily orchestrator for Juviny's job application automation.
+run_daily.py — Daily orchestrator for the job application automation.
 
 Runs in order:
   1. follow_up.py  — send connection requests for yesterday's applications

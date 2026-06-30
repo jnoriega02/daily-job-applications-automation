@@ -1,5 +1,5 @@
 """
-google_jobs.py — Google Jobs search + queue builder for Juviny Noriega.
+google_jobs.py — Google Jobs search + queue builder.
 
 Flow:
   1. Search Google Jobs panel for DFW + remote listings (last 24h)
@@ -36,6 +36,7 @@ RESUMES_DIR = BASE_DIR / "tailored_resumes"
 RESUMES_DIR.mkdir(exist_ok=True)
 
 SCORE_THRESHOLD = 6.0
+AUTO_DIRECT_APPLY = False
 
 # ATS platforms that require account creation — skip direct apply for these
 ATS_BLOCKLIST = {
@@ -105,10 +106,34 @@ def _already_queued(queue: list[dict], title: str, company: str) -> bool:
     )
 
 
+def _find_queued(queue: list[dict], title: str, company: str) -> dict | None:
+    for entry in queue:
+        if entry.get("title") == title and entry.get("company") == company:
+            return entry
+    return None
+
+
 def _is_ats_url(url: str) -> bool:
     """Return True if the apply URL points to a known ATS requiring an account."""
     url_lower = (url or "").lower()
     return any(ats in url_lower for ats in ATS_BLOCKLIST)
+
+
+def _filter_apply_urls_for_job(urls: list[str], title: str, company: str) -> list[str]:
+    distinctive_words = {
+        word
+        for word in re.findall(r"[a-z0-9]+", f"{title} {company}".lower())
+        if len(word) >= 3 and word not in {"engineer", "developer", "software", "data", "the", "and"}
+    }
+    if not distinctive_words:
+        return urls
+
+    matched = []
+    for url in urls:
+        url_words = set(re.findall(r"[a-z0-9]+", url.lower()))
+        if len(distinctive_words & url_words) >= min(2, len(distinctive_words)):
+            matched.append(url)
+    return matched or urls
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +195,7 @@ async def extract_google_jobs(page: Page) -> list[dict]:
                     const source = sourceMatch ? sourceMatch[1].trim() : '';
                     const localOnsite = /,\\s*[A-Z]{2}\\b|your city/i.test(location);
                     return {
+                        card_index: titleEls.indexOf(titleEl),
                         title,
                         company,
                         location,
@@ -187,6 +213,45 @@ async def extract_google_jobs(page: Page) -> list[dict]:
             }"""
         )
         if modern_jobs:
+            title_cards = page.locator("div.tNxQIb")
+            for job in modern_jobs:
+                try:
+                    card_index = job.pop("card_index", None)
+                    if card_index is None:
+                        continue
+                    await title_cards.nth(card_index).click()
+                    await page.wait_for_timeout(1200)
+                    detail = await page.evaluate(
+                        """(source) => {
+                            const applyLinks = [...document.querySelectorAll('a[href]')]
+                                .map((a) => ({
+                                    text: (a.innerText || '').trim(),
+                                    href: a.href,
+                                }))
+                                .filter((link) => /^apply/i.test(link.text));
+                            const preferred = applyLinks.filter((link) =>
+                                !source || link.text.toLowerCase().includes(source.toLowerCase())
+                            );
+                            return {
+                                applyUrls: (preferred.length ? preferred : applyLinks)
+                                    .map((link) => link.href)
+                                    .filter((href, index, arr) => href && arr.indexOf(href) === index),
+                                detailText: document.body.innerText,
+                            };
+                        }""",
+                        job.get("source", ""),
+                    )
+                    job["apply_urls"] = _filter_apply_urls_for_job(
+                        detail.get("applyUrls", [])[:5],
+                        job["title"],
+                        job["company"],
+                    )
+                    detail_text = detail.get("detailText", "")
+                    if job["title"] in detail_text:
+                        start = detail_text.rfind(job["title"])
+                        job["description"] = detail_text[start:start + 3000]
+                except Exception as e:
+                    print(f"[google] Could not enrich apply URL for {job.get('title', '')}: {e}")
             return modern_jobs
     except Exception as e:
         print(f"[google] Modern card extraction failed: {e}")
@@ -404,16 +469,23 @@ async def run() -> None:
                 if score < SCORE_THRESHOLD:
                     continue
 
-                # Add to queue for manual review
-                if not _already_queued(queue, job["title"], job["company"]):
-                    queue_entry = {**job, "score": score, "queued_at": datetime.utcnow().isoformat() + "Z"}
+                # Add to queue for manual review, or refresh links/description if already queued.
+                queue_entry = {**job, "score": score, "queued_at": datetime.utcnow().isoformat() + "Z"}
+                existing_queue_entry = _find_queued(queue, job["title"], job["company"])
+                if existing_queue_entry:
+                    queued_at = existing_queue_entry.get("queued_at", queue_entry["queued_at"])
+                    existing_queue_entry.update(queue_entry)
+                    existing_queue_entry["queued_at"] = queued_at
+                    _save_queue(queue)
+                    print(f"[queue] Updated: {job['title']} @ {job['company']}")
+                else:
                     queue.append(queue_entry)
                     _save_queue(queue)
                     print(f"[queue] Added: {job['title']} @ {job['company']}")
 
-                # Attempt direct apply if URL is not ATS-gated
+                # Google external apply pages are queued for manual review by default.
                 has_direct = any(not _is_ats_url(u) for u in job.get("apply_urls", []))
-                if has_direct:
+                if has_direct and AUTO_DIRECT_APPLY:
                     safe_company = re.sub(r"[^\w]", "_", job["company"])[:30]
                     safe_title = re.sub(r"[^\w]", "_", job["title"])[:30]
                     resume_path = str(RESUMES_DIR / f"resume_{safe_title}_{safe_company}.docx")
