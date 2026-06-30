@@ -66,13 +66,13 @@ SEARCH_QUERIES = [
     # Local + hybrid/onsite, last 24h
     (
         "https://www.google.com/search"
-        "?q=software+engineer+OR+data+engineer+hybrid+OR+onsite+your+city"
+        "?udm=8&q=software+engineer+OR+data+engineer+hybrid+OR+onsite+your+city"
         "&tbs=qdr:d"
     ),
     # Local ML/data/junior, last 24h
     (
         "https://www.google.com/search"
-        "?q=data+engineer+OR+ml+engineer+junior+your+city+jobs"
+        "?udm=8&q=data+engineer+OR+ml+engineer+junior+your+city+jobs"
         "&tbs=qdr:d"
     ),
 ]
@@ -131,10 +131,68 @@ async def extract_google_jobs(page: Page) -> list[dict]:
     except Exception:
         pass
 
-    # Job cards inside the Google Jobs SERP widget
-    cards = await page.query_selector_all(
-        "li.iFjolb, div.tNxQIb, div[data-ved] div.BjJfJf"
-    )
+    if "google.com/sorry" in page.url:
+        print("[google] Google anti-bot page detected. Skipping this query.")
+        return jobs
+
+    # Current Google Jobs vertical cards. Each title div lives inside a
+    # clickable card whose text contains title/company/location/source/date.
+    try:
+        modern_jobs = await page.evaluate(
+            """() => {
+                const titleEls = [...document.querySelectorAll('div.tNxQIb')];
+                return titleEls.map((titleEl) => {
+                    let card = titleEl;
+                    for (let i = 0; i < 5 && card.parentElement; i += 1) {
+                        if (card.getAttribute('role') === 'button' && card.innerText.includes(titleEl.innerText)) {
+                            break;
+                        }
+                        card = card.parentElement;
+                    }
+                    const lines = (card.innerText || '')
+                        .split('\\n')
+                        .map((line) => line.trim())
+                        .filter(Boolean);
+                    const title = titleEl.innerText.trim() || lines[0] || '';
+                    const titleIndex = lines.findIndex((line) => line === title);
+                    const company = lines[titleIndex + 1] || lines.find((line) =>
+                        line !== title
+                        && !/ via |remote|hybrid|on-site|onsite|, [A-Z]{2}\\b/i.test(line)
+                        && !/hour|day|week|month|ago/i.test(line)
+                        && !/full-time|part-time|contractor|contract|no degree/i.test(line)
+                        && line.length > 1
+                    ) || '';
+                    const locationLine = lines.find((line) => / via |remote|hybrid|on-site|onsite|, [A-Z]{2}\\b/i.test(line)) || '';
+                    const location = locationLine.replace(/\\s+•\\s+via\\s+.*$/i, '').trim();
+                    const date = lines.find((line) => /hour|day|week|month|ago/i.test(line)) || '';
+                    const description = lines.join(' ');
+                    const sourceMatch = locationLine.match(/via\\s+(.+)$/i);
+                    const source = sourceMatch ? sourceMatch[1].trim() : '';
+                    const localOnsite = /,\\s*[A-Z]{2}\\b|your city/i.test(location);
+                    return {
+                        title,
+                        company,
+                        location,
+                        date,
+                        description,
+                        apply_urls: [],
+                        work_type: /remote/i.test(description) ? 'remote'
+                            : /hybrid/i.test(description) ? 'hybrid'
+                            : /on-site|onsite/i.test(description) ? 'onsite'
+                            : localOnsite ? 'onsite'
+                            : '',
+                        source,
+                    };
+                }).filter((job) => job.title && job.company);
+            }"""
+        )
+        if modern_jobs:
+            return modern_jobs
+    except Exception as e:
+        print(f"[google] Modern card extraction failed: {e}")
+
+    # Older Google Jobs SERP widget fallback.
+    cards = await page.query_selector_all("li.iFjolb, div[data-ved] div.BjJfJf")
 
     for card in cards:
         try:
@@ -290,14 +348,19 @@ async def run() -> None:
     log = _load_log()
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=False, slow_mo=40)
-        context = await browser.new_context(
+        user_data_dir = str(BASE_DIR / "chrome_profile")
+        context = await pw.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            headless=False,
+            slow_mo=40,
             viewport={"width": 1280, "height": 900},
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
+            args=["--disable-blink-features=AutomationControlled"],
+            ignore_default_args=["--enable-automation"],
         )
         page = await context.new_page()
 
@@ -377,7 +440,7 @@ async def run() -> None:
                         _save_log(log)
                         await page.wait_for_timeout(3000)
 
-        await browser.close()
+        await context.close()
 
     print(f"\n[done] Queue saved to {QUEUE_FILE} ({len(queue)} entries)")
 
